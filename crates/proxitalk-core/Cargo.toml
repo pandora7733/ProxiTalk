@@ -1,0 +1,6 @@
+[package]
+name = "proxitalk-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
