@@ -4,5 +4,5 @@ pub mod chat;
 
 /// Cargo.toml의 version 값을 컴파일 시점에 가져온다.
 pub fn version() -> &'static str {
-   env!("CARGO_PKG_VERSION")
+    env!("CARGO_PKG_VERSION")
 }
