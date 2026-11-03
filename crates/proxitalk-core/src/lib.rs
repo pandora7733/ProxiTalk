@@ -1,14 +1,8 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! ProxiTalk 핵심 로직 (네트워크, 프로토콜, 룸)
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod chat;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+/// Cargo.toml의 version 값을 컴파일 시점에 가져온다.
+pub fn version() -> &'static str {
+   env!("CARGO_PKG_VERSION")
 }

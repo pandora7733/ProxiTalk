@@ -5,3 +5,5 @@ edition.workspace = true
 
 [dependencies]
 proxitalk-core = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }

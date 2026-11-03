@@ -8,3 +8,5 @@ edition = "2024"
 
 [workspace.dependencies]
 proxitalk-core = { path = "crates/proxitalk-core" }
+tokio = { version = "1.54", features = ["full"] }
+anyhow = "1.0"
