@@ -59,11 +59,11 @@ async fn accept_loop(listener: TcpListener, room: mpsc::Sender<RoomCmd>) {
                 let room = room.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(stream, room).await {
-                        eprintln!("[server] {addr}: {e:#}");
+                        tracing::warn!("{addr}: {e:#}");
                     }
                 });
             }
-            Err(e) => eprintln!("[server] accept 실패: {e}"),
+            Err(e) => tracing::warn!("accept 실패: {e}"),
         }
     }
 }
@@ -225,8 +225,8 @@ fn validate_nickname(nickname: &str, members: &HashMap<MemberId, Member>) -> Res
 fn broadcast(members: &HashMap<MemberId, Member>, msg: ServerMsg) {
     for member in members.values() {
         if let Err(TrySendError::Full(_)) = member.outbox.try_send(msg.clone()) {
-            eprintln!(
-                "[server] {} 님의 수신이 밀려 메시지를 버렸습니다",
+            tracing::warn!(
+                "{} 님의 수신이 밀려 메시지를 버렸습니다",
                 member.info.nickname
             );
         }
