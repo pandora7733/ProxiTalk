@@ -96,7 +96,11 @@ impl App {
 }
 
 /// 이벤트 루프: 그리기 → (키 입력 | 서버 메시지) 기다리기 → 상태 갱신 → 반복
-pub async fn run(mut terminal: DefaultTerminal, mut session: Session, title: String) -> Result<()> {
+pub async fn run(
+    terminal: &mut DefaultTerminal,
+    mut session: Session,
+    title: String,
+) -> Result<()> {
     let mut app = App::new(title, session.my_id, std::mem::take(&mut session.members));
     let mut keys = EventStream::new();
 

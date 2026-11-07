@@ -1,6 +1,7 @@
 //! ProxiTalk 핵심 로직 (네트워크, 프로토콜, 룸)
 
 pub mod client;
+pub mod discovery;
 pub mod protocol;
 pub mod server;
 
