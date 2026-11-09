@@ -15,10 +15,11 @@ use proxitalk_core::{client, discovery, server};
 const USAGE: &str = "\
 사용법:
   proxitalk-cli host <닉네임> <방이름> [포트]   공개방 열기 (포트 생략 시 자동 선택)
-  proxitalk-cli private <닉네임> <방이름> [포트] 비공개방 열기 (목록에 안 보이고 초대 링크로만 입장)
+  proxitalk-cli private <닉네임> <방이름> [포트] 비공개방 열기 (목록에 안 보이고 초대 코드로만 입장)
   proxitalk-cli browse <닉네임>                같은 네트워크의 공개방 목록에서 골라 입장
   proxitalk-cli join <IP:포트> <닉네임>         주소로 직접 입장 (mDNS가 막힌 네트워크용)
-  proxitalk-cli join <초대 링크> <닉네임>       초대 링크로 비공개방 입장";
+  proxitalk-cli join <초대 코드> <닉네임>       초대 코드로 비공개방 입장 (방장을 자동으로 찾음)
+  proxitalk-cli join <IP>/<초대 코드> <닉네임>  자동으로 못 찾을 때 방장의 IP를 직접 지정";
 
 const MAX_ROOM_NAME_CHARS: usize = 20;
 
@@ -43,20 +44,18 @@ async fn main() -> Result<()> {
         Some("join") => {
             let target = args
                 .get(2)
-                .context("접속할 주소나 초대 링크가 필요합니다 (예: 192.168.0.12:9000)")?;
+                .context("접속할 주소나 초대 코드가 필요합니다 (예: 192.168.0.12:9000)")?;
             let nickname = args.get(3).context("닉네임이 필요합니다")?;
             init_logging(nickname)?;
 
-            let (session, title) = if invite::is_invite_link(target) {
-                let invite: Invite = target.parse()?;
-                let session =
-                    client::connect_any(&[invite.addr], nickname, Some(&invite.token)).await?;
-                (session, invite.addr.to_string())
-            } else {
+            // "IP:포트"에만 콜론이 있다. 나머지는 초대 코드로 처리한다.
+            let (session, title) = if target.contains(':') {
                 (
                     client::connect(target, nickname, None).await?,
                     target.clone(),
                 )
+            } else {
+                join_with_code(target, nickname).await?
             };
 
             run_chat(session, title, None).await?;
@@ -70,6 +69,28 @@ async fn main() -> Result<()> {
     }
 }
 
+/// 코드에서 포트와 비밀값을 꺼내고, 방장의 IP를 찾아 입장한다.
+async fn join_with_code(target: &str, nickname: &str) -> Result<(Session, String)> {
+    let (given_ip, code) = match target.split_once('/') {
+        Some((ip, code)) => {
+            let ip: IpAddr = ip
+                .parse()
+                .with_context(|| format!("IP 주소가 올바르지 않습니다: {ip}"))?;
+            (Some(ip), code)
+        }
+        None => (None, target),
+    };
+    let invite: Invite = code.parse()?;
+
+    let addr = match given_ip {
+        Some(ip) => SocketAddr::new(ip, invite.port),
+        None => discovery::find_private_room(invite.port).await?,
+    };
+    let token = invite::token_text(invite.secret);
+    let session = client::connect_any(&[addr], nickname, Some(&token)).await?;
+    Ok((session, addr.to_string()))
+}
+
 async fn run_host(nickname: &str, room_name: &str, port: u16, private: bool) -> Result<()> {
     let room_name = room_name.trim();
     if room_name.is_empty() || room_name.chars().count() > MAX_ROOM_NAME_CHARS {
@@ -77,16 +98,18 @@ async fn run_host(nickname: &str, room_name: &str, port: u16, private: bool) -> 
     }
     init_logging(nickname)?;
 
-    // 비공개방만 토큰을 만든다.
-    let token = if private {
-        Some(invite::generate_token()?)
+        // 비공개방만 비밀값을 만든다. 코드에 넣을 포트는 서버를 연 뒤에야 알 수 있다.
+    let secret = if private {
+        Some(invite::generate_secret()?)
     } else {
         None
     };
+    let token = secret.map(invite::token_text);
     let port = server::start_server(port, token.clone()).await?;
 
-    // 비공개방은 광고하지 않는다. 그래서 방 목록에 나타나지 않는다.
+    // 비공개방은 광고하지 않는다. 코드를 가진 사람의 질문에만 대답한다.
     let advertiser = if private {
+        discovery::answer_probes(port).await?;
         None
     } else {
         // mDNS가 실패해도 방은 계속 연다. (IP로 직접 join은 가능하므로)
@@ -99,26 +122,21 @@ async fn run_host(nickname: &str, room_name: &str, port: u16, private: bool) -> 
         }
     };
 
-    let (title, invite_link) = match &token {
-        Some(token) => {
-            let ip =
-                local_ip().context("이 PC의 IP를 찾을 수 없어 초대 링크를 만들 수 없습니다")?;
-            let invite = Invite {
-                addr: SocketAddr::new(ip, port),
-                token: token.clone(),
-            };
-            (format!("{room_name} · 비공개"), Some(invite.to_string()))
+    let ip = local_ip().map_or("<이 PC의 IP>".to_string(), |ip| ip.to_string());
+    let (title, invite_code) = match secret {
+        Some(secret) => {
+            let invite = Invite { port, secret };
+            (
+                format!("{room_name} · 비공개 · IP {ip}"),
+                Some(invite.to_string()),
+            )
         }
-        None => {
-            let ip = local_ip().map_or("<이 PC의 IP>".to_string(), |ip| ip.to_string());
-            (format!("{room_name} · 내 방 · 접속 주소 {ip}:{port}"), None)
-        }
+        None => (format!("{room_name} · 내 방 · 접속 주소 {ip}:{port}"), None),
     };
 
     // 방장도 일반 멤버처럼 자기 방에 접속한다. (비공개방이면 토큰도 똑같이 제시한다)
     let session = client::connect(&format!("127.0.0.1:{port}"), nickname, token.as_deref()).await?;
-    let result = run_chat(session, title, invite_link).await;
-
+    let result = run_chat(session, title, invite_code).await;
     if let Some(advertiser) = advertiser {
         advertiser.stop();
     }

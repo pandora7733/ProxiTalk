@@ -108,7 +108,7 @@ async fn handle_connection(
 
     // 룸에 들어가기 전에 초대 토큰부터 검사한다.
     if !token_matches(access_token.as_deref(), token.as_deref()) {
-        let reason = "초대 링크가 없거나 올바르지 않습니다".to_string();
+        let reason = "초대 코드가 없거나 올바르지 않습니다".to_string();
         protocol::write_frame(&mut writer, &ServerMsg::Reject { reason }).await?;
         bail!("초대 토큰이 틀려 거절");
     }
