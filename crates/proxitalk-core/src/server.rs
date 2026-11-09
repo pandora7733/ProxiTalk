@@ -40,15 +40,17 @@ struct Member {
 }
 
 /// 포트를 열고 룸 액터와 접속 대기 루프를 백그라운드로 띄운다.
-pub async fn start_server(port: u16) -> Result<()> {
+/// port가 0이면 OS가 비어 있는 포트를 골라준다. 실제로 열린 포트 번호를 돌려준다.
+pub async fn start_server(port: u16) -> Result<u16> {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .await
         .with_context(|| format!("{port}번 포트를 열 수 없습니다"))?;
+    let port = listener.local_addr()?.port();
 
     let (room_tx, room_rx) = mpsc::channel(256);
     tokio::spawn(room_task(room_rx));
     tokio::spawn(accept_loop(listener, room_tx));
-    Ok(())
+    Ok(port)
 }
 
 async fn accept_loop(listener: TcpListener, room: mpsc::Sender<RoomCmd>) {

@@ -1,12 +1,21 @@
 //! 멤버 쪽: 방장에 접속하고, 화면(UI)과는 채널로만 대화한다.
 //! (방장 자신도 이 코드로 자기 방에 접속한다)
 
-use anyhow::{Context, Result, bail};
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use crate::protocol::{self, ClientMsg, MemberId, MemberInfo, PROTOCOL_VERSION, ServerMsg};
+
+/// 주소 하나에 TCP 연결을 시도하는 최대 시간
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Hello를 보낸 뒤 Welcome/Reject를 기다리는 최대 시간
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 입장에 성공한 연결. UI는 이 구조체만 알면 된다.
 pub struct Session {
@@ -19,11 +28,37 @@ pub struct Session {
     pub incoming: mpsc::Receiver<ServerMsg>,
 }
 
-/// 접속 → Hello → Welcome/Reject 까지 처리하고, 성공하면 Session을 돌려준다.
+/// "IP:포트" 문자열로 접속한다. (join 명령, 방장 자신)
 pub async fn connect(addr: &str, nickname: &str) -> Result<Session> {
-    let stream = TcpStream::connect(addr)
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr)
         .await
-        .with_context(|| format!("{addr} 에 연결할 수 없습니다"))?;
+        .with_context(|| format!("주소를 해석할 수 없습니다: {addr}"))?
+        .collect();
+    connect_any(&addrs, nickname).await
+}
+
+/// 주소 후보들을 차례로 시도해서, 처음 연결된 곳으로 입장한다. (방 목록에서 고른 방)
+pub async fn connect_any(addrs: &[SocketAddr], nickname: &str) -> Result<Session> {
+    let stream = connect_first(addrs).await?;
+    timeout(HANDSHAKE_TIMEOUT, handshake(stream, nickname))
+        .await
+        .context("방장이 응답하지 않습니다")?
+}
+
+async fn connect_first(addrs: &[SocketAddr]) -> Result<TcpStream> {
+    let mut last_error = anyhow!("접속할 주소가 없습니다");
+    for addr in addrs {
+        match timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(e)) => last_error = anyhow!("{addr} 에 연결할 수 없습니다: {e}"),
+            Err(_) => last_error = anyhow!("{addr} 연결 시간 초과"),
+        }
+    }
+    Err(last_error)
+}
+
+/// Hello → Welcome/Reject 까지 처리하고, 성공하면 Session을 돌려준다.
+async fn handshake(stream: TcpStream, nickname: &str) -> Result<Session> {
     let (mut reader, mut writer) = stream.into_split();
 
     let hello = ClientMsg::Hello {
@@ -47,6 +82,7 @@ pub async fn connect(addr: &str, nickname: &str) -> Result<Session> {
     })
 }
 
+// ... spawn_writer, spawn_reader 는 M3 그대로 ...
 /// 채널로 받은 메시지를 소켓에 쓰는 전용 태스크
 fn spawn_writer(mut writer: OwnedWriteHalf) -> mpsc::Sender<ClientMsg> {
     let (tx, mut rx) = mpsc::channel::<ClientMsg>(64);
