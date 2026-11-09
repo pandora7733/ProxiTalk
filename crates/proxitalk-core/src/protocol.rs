@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// 서로 다른 버전의 앱끼리 접속하는 것을 막기 위한 번호
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 프레임 하나의 최대 크기 (악의적이거나 망가진 길이 값 방어)
 const MAX_FRAME_LEN: usize = 64 * 1024;
@@ -27,6 +27,8 @@ pub enum ClientMsg {
     Hello {
         version: u32,
         nickname: String,
+        /// 비공개방의 초대 토큰, 공개방에서는 None
+        token: Option<String>,
     },
     Chat {
         text: String,

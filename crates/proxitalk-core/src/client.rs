@@ -29,18 +29,22 @@ pub struct Session {
 }
 
 /// "IP:포트" 문자열로 접속한다. (join 명령, 방장 자신)
-pub async fn connect(addr: &str, nickname: &str) -> Result<Session> {
+pub async fn connect(addr: &str, nickname: &str, token: Option<&str>) -> Result<Session> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr)
         .await
         .with_context(|| format!("주소를 해석할 수 없습니다: {addr}"))?
         .collect();
-    connect_any(&addrs, nickname).await
+    connect_any(&addrs, nickname, token).await
 }
 
-/// 주소 후보들을 차례로 시도해서, 처음 연결된 곳으로 입장한다. (방 목록에서 고른 방)
-pub async fn connect_any(addrs: &[SocketAddr], nickname: &str) -> Result<Session> {
+/// 주소 후보들을 차례로 시도해서, 처음 연결된 곳으로 입장한다. (방 목록, 초대 링크)
+pub async fn connect_any(
+    addrs: &[SocketAddr],
+    nickname: &str,
+    token: Option<&str>,
+) -> Result<Session> {
     let stream = connect_first(addrs).await?;
-    timeout(HANDSHAKE_TIMEOUT, handshake(stream, nickname))
+    timeout(HANDSHAKE_TIMEOUT, handshake(stream, nickname, token))
         .await
         .context("방장이 응답하지 않습니다")?
 }
@@ -58,12 +62,13 @@ async fn connect_first(addrs: &[SocketAddr]) -> Result<TcpStream> {
 }
 
 /// Hello → Welcome/Reject 까지 처리하고, 성공하면 Session을 돌려준다.
-async fn handshake(stream: TcpStream, nickname: &str) -> Result<Session> {
+async fn handshake(stream: TcpStream, nickname: &str, token: Option<&str>) -> Result<Session> {
     let (mut reader, mut writer) = stream.into_split();
 
     let hello = ClientMsg::Hello {
         version: PROTOCOL_VERSION,
         nickname: nickname.to_string(),
+        token: token.map(str::to_string),
     };
     protocol::write_frame(&mut writer, &hello).await?;
 

@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
+use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use anyhow::{Context, Result, bail};
 use tokio::net::tcp::OwnedReadHalf;
@@ -41,7 +43,8 @@ struct Member {
 
 /// 포트를 열고 룸 액터와 접속 대기 루프를 백그라운드로 띄운다.
 /// port가 0이면 OS가 비어 있는 포트를 골라준다. 실제로 열린 포트 번호를 돌려준다.
-pub async fn start_server(port: u16) -> Result<u16> {
+/// access_token이 Some이면 비공개방: 같은 토큰을 제시한 사람만 입장할 수 있다.
+pub async fn start_server(port: u16, access_token: Option<String>) -> Result<u16> {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .await
         .with_context(|| format!("{port}번 포트를 열 수 없습니다"))?;
@@ -49,18 +52,23 @@ pub async fn start_server(port: u16) -> Result<u16> {
 
     let (room_tx, room_rx) = mpsc::channel(256);
     tokio::spawn(room_task(room_rx));
-    tokio::spawn(accept_loop(listener, room_tx));
+    tokio::spawn(accept_loop(listener, room_tx, access_token.map(Arc::from)));
     Ok(port)
 }
 
-async fn accept_loop(listener: TcpListener, room: mpsc::Sender<RoomCmd>) {
+async fn accept_loop(
+    listener: TcpListener,
+    room: mpsc::Sender<RoomCmd>,
+    access_token: Option<Arc<str>>,
+) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
                 // 접속자마다 독립된 태스크를 하나씩 만든다.
                 let room = room.clone();
+                let access_token = access_token.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, room).await {
+                    if let Err(e) = handle_connection(stream, room, access_token).await {
                         tracing::warn!("{addr}: {e:#}");
                     }
                 });
@@ -71,7 +79,11 @@ async fn accept_loop(listener: TcpListener, room: mpsc::Sender<RoomCmd>) {
 }
 
 /// 접속자 한 명을 담당한다: 입장 처리 → 쓰기 태스크 생성 → 읽기 루프
-async fn handle_connection(stream: TcpStream, room: mpsc::Sender<RoomCmd>) -> Result<()> {
+async fn handle_connection(
+    stream: TcpStream,
+    room: mpsc::Sender<RoomCmd>,
+    access_token: Option<Arc<str>>,
+) -> Result<()> {
     let (mut reader, mut writer) = stream.into_split();
 
     // ── 1단계: 입장 전. Hello 외에는 아무것도 받지 않는다 ──
@@ -79,8 +91,12 @@ async fn handle_connection(stream: TcpStream, room: mpsc::Sender<RoomCmd>) -> Re
         .await
         .context("Hello를 기다리다 시간 초과")??;
 
-    let nickname = match first {
-        Some(ClientMsg::Hello { version, nickname }) if version == PROTOCOL_VERSION => nickname,
+    let (nickname, token) = match first {
+        Some(ClientMsg::Hello {
+            version,
+            nickname,
+            token,
+        }) if version == PROTOCOL_VERSION => (nickname, token),
         Some(ClientMsg::Hello { version, .. }) => {
             let reason = format!("버전이 다릅니다 (방장 {PROTOCOL_VERSION}, 내 앱 {version})");
             protocol::write_frame(&mut writer, &ServerMsg::Reject { reason }).await?;
@@ -89,6 +105,14 @@ async fn handle_connection(stream: TcpStream, room: mpsc::Sender<RoomCmd>) -> Re
         Some(_) => bail!("Hello 전에 다른 메시지를 보냄"),
         None => return Ok(()), // 아무 말 없이 끊음
     };
+
+    // 룸에 들어가기 전에 초대 토큰부터 검사한다.
+    if !token_matches(access_token.as_deref(), token.as_deref()) {
+        let reason = "초대 링크가 없거나 올바르지 않습니다".to_string();
+        protocol::write_frame(&mut writer, &ServerMsg::Reject { reason }).await?;
+        bail!("초대 토큰이 틀려 거절");
+    }
+
 
     // 룸 액터에게 입장을 요청하고, oneshot 채널로 결과를 기다린다.
     let (outbox_tx, mut outbox_rx) = mpsc::channel(OUTBOX_SIZE);
@@ -130,6 +154,16 @@ async fn handle_connection(stream: TcpStream, room: mpsc::Sender<RoomCmd>) -> Re
     let result = read_loop(&mut reader, my_id, &room).await;
     let _ = room.send(RoomCmd::Leave { id: my_id }).await;
     result
+}
+
+/// 공개방(expected가 None)은 누구나 통과. 비공개방은 토큰이 같아야 통과.
+fn token_matches(expected: Option<&str>, given: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    // ==는 다른 글자를 만나는 순간 멈춰서, 걸린 시간으로 토큰을 추측할 여지가 생긴다.
+    // ct_eq는 내용과 상관없이 항상 끝까지 비교한다.
+    given.is_some_and(|given| bool::from(given.as_bytes().ct_eq(expected.as_bytes())))
 }
 
 async fn read_loop(

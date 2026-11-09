@@ -9,10 +9,13 @@ use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use crate::app::{App, LogLine};
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [main, input, help] = Layout::vertical([
+    // 초대 링크 줄은 링크가 있을 때만 1칸을 차지한다.
+    let invite_height = u16::from(app.invite.is_some());
+    let [main, input, help, invite] = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(3),
         Constraint::Length(1),
+        Constraint::Length(invite_height),
     ])
     .areas(frame.area());
     let [chat, members] =
@@ -24,6 +27,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let help_text = " Enter 전송 · Backspace 지우기 · Esc 나가기";
     frame.render_widget(Paragraph::new(help_text).dark_gray(), help);
+
+    if let Some(link) = &app.invite {
+        let text = format!(" 초대 링크: {link}");
+        frame.render_widget(Paragraph::new(text).yellow(), invite);
+    }
 }
 
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {

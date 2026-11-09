@@ -18,6 +18,7 @@ pub enum LogLine {
 /// 화면을 그리는 데 필요한 모든 상태
 pub struct App {
     pub title: String,
+    pub invite: Option<String>,
     pub my_id: MemberId,
     pub members: Vec<MemberInfo>,
     pub log: Vec<LogLine>,
@@ -27,9 +28,10 @@ pub struct App {
 }
 
 impl App {
-    fn new(title: String, my_id: MemberId, members: Vec<MemberInfo>) -> Self {
+    fn new(title: String, invite: Option<String>, my_id: MemberId, members: Vec<MemberInfo>) -> Self {
         Self {
             title,
+            invite,
             my_id,
             members,
             log: vec![LogLine::System("입장했습니다.".into())],
@@ -100,8 +102,9 @@ pub async fn run(
     terminal: &mut DefaultTerminal,
     mut session: Session,
     title: String,
+    invite: Option<String>,
 ) -> Result<()> {
-    let mut app = App::new(title, session.my_id, std::mem::take(&mut session.members));
+    let mut app = App::new(title, invite, session.my_id, std::mem::take(&mut session.members));
     let mut keys = EventStream::new();
 
     while !app.should_quit {
