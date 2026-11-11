@@ -72,7 +72,7 @@ pub async fn run(
                             lobby.status = format!("'{}' 방에 접속하는 중...", room.name);
                             terminal.draw(|frame| draw(frame, &lobby))?;
 
-                            match client::connect_any(&room.addrs, nickname).await {
+                            match client::connect_any(&room.addrs, nickname, None).await {
                                 Ok(session) => return Ok(Some((session, room.name))),
                                 Err(e) => lobby.status = format!("입장 실패: {e:#}"),
                             }

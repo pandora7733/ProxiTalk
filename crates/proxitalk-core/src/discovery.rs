@@ -1,16 +1,26 @@
-//! mDNS(멀티캐스트 DNS)로 같은 네트워크의 공개방을 광고하고 찾는다.
+//! 같은 네트워크의 방을 찾는다.
+//! 공개방은 mDNS로 광고하고, 비공개방은 코드를 가진 사람이 UDP 브로드캐스트로 물어본다.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use crate::protocol::PROTOCOL_VERSION;
 
 /// "ProxiTalk 방"이라는 서비스 종류. 같은 종류끼리만 서로 보인다.
 const SERVICE_TYPE: &str = "_proxitalk._tcp.local.";
+
+/// 비공개방 찾기: 참가자의 질문과 방장의 대답
+const PROBE: &[u8] = b"PROXITALK-WHERE";
+const PROBE_REPLY: &[u8] = b"PROXITALK-HERE";
+/// 와이파이 브로드캐스트는 잘 유실되므로 여러 번 물어본다. (최대 3초)
+const PROBE_ATTEMPTS: usize = 6;
+const PROBE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// 방 목록 화면에 보여줄 방 하나
 #[derive(Debug, Clone)]
@@ -128,6 +138,50 @@ pub fn browse() -> Result<mpsc::Receiver<RoomEvent>> {
     });
 
     Ok(rx)
+}
+
+/// 방장(비공개방): 방 포트로 들어오는 질문에 대답한다. 먼저 나서서 알리지는 않는다.
+pub async fn answer_probes(port: u16) -> Result<()> {
+    let socket = UdpSocket::bind(("0.0.0.0", port))
+        .await
+        .with_context(|| format!("UDP {port}번 포트를 열 수 없습니다"))?;
+
+    tokio::spawn(async move {
+        let mut buf = [0u8; 32];
+        loop {
+            match socket.recv_from(&mut buf).await {
+                Ok((len, from)) if &buf[..len] == PROBE => {
+                    if let Err(e) = socket.send_to(PROBE_REPLY, from).await {
+                        tracing::warn!("{from}: 비공개방 찾기 응답 실패: {e}");
+                    }
+                }
+                Ok(_) => {} // 모르는 패킷은 무시한다.
+                Err(e) => tracing::warn!("비공개방 찾기 수신 실패: {e}"),
+            }
+        }
+    });
+    Ok(())
+}
+
+/// 참가자: 같은 네트워크 전체에 물어보고, 대답한 기기의 주소를 돌려준다.
+pub async fn find_private_room(port: u16) -> Result<SocketAddr> {
+    let socket = UdpSocket::bind(("0.0.0.0", 0)).await?;
+    socket.set_broadcast(true)?;
+
+    let mut buf = [0u8; 32];
+    for _ in 0..PROBE_ATTEMPTS {
+        socket.send_to(PROBE, (Ipv4Addr::BROADCAST, port)).await?;
+        // 받은 패킷의 "보낸 사람 주소"가 곧 방장의 IP다.
+        match timeout(PROBE_INTERVAL, socket.recv_from(&mut buf)).await {
+            Ok(Ok((len, from))) if &buf[..len] == PROBE_REPLY => {
+                return Ok(SocketAddr::new(from.ip(), port));
+            }
+            _ => {} // 시간 초과나 모르는 패킷이면 다시 물어본다.
+        }
+    }
+    bail!(
+        "이 네트워크에서 방을 찾지 못했습니다. 코드와 와이파이를 확인하거나, 방장 화면의 IP로 join <IP>/<코드> 를 시도해 보세요"
+    )
 }
 
 /// 방마다 겹치지 않는 짧은 ID (현재 시각 나노초와 프로세스 번호를 섞는다)

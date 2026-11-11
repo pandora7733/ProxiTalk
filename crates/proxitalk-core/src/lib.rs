@@ -1,8 +1,11 @@
 //! ProxiTalk 핵심 로직 (네트워크, 프로토콜, 룸)
 
+pub mod access;
 pub mod client;
 pub mod discovery;
+pub mod invite;
 pub mod protocol;
+pub mod secure;
 pub mod server;
 
 /// Cargo.toml의 version 값을 컴파일 시점에 가져온다.
