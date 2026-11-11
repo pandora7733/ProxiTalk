@@ -1,6 +1,7 @@
 mod app;
 mod lobby;
 mod ui;
+mod wrap;
 
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -8,8 +9,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
+use app::HostView;
 use proxitalk_core::client::Session;
-use proxitalk_core::invite::{self, Invite};
+use proxitalk_core::invite::Invite;
 use proxitalk_core::{client, discovery, server};
 
 const USAGE: &str = "\
@@ -27,7 +29,7 @@ const MAX_ROOM_NAME_CHARS: usize = 20;
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
-        match args.get(1).map(String::as_str) {
+    match args.get(1).map(String::as_str) {
         Some(command @ ("host" | "private")) => {
             let nickname = args.get(2).context("닉네임이 필요합니다")?;
             let room_name = args.get(3).context("방 이름이 필요합니다")?;
@@ -86,8 +88,8 @@ async fn join_with_code(target: &str, nickname: &str) -> Result<(Session, String
         Some(ip) => SocketAddr::new(ip, invite.port),
         None => discovery::find_private_room(invite.port).await?,
     };
-    let token = invite::token_text(invite.secret);
-    let session = client::connect_any(&[addr], nickname, Some(&token)).await?;
+    println!("{addr} 에 접속합니다. 코드가 맞으면 방장의 수락을 기다립니다. (최대 60초)");
+    let session = client::connect_any(&[addr], nickname, Some(&invite)).await?;
     Ok((session, addr.to_string()))
 }
 
@@ -98,14 +100,8 @@ async fn run_host(nickname: &str, room_name: &str, port: u16, private: bool) -> 
     }
     init_logging(nickname)?;
 
-        // 비공개방만 비밀값을 만든다. 코드에 넣을 포트는 서버를 연 뒤에야 알 수 있다.
-    let secret = if private {
-        Some(invite::generate_secret()?)
-    } else {
-        None
-    };
-    let token = secret.map(invite::token_text);
-    let port = server::start_server(port, token.clone()).await?;
+    let room = server::start_server(port, private).await?;
+    let port = room.port;
 
     // 비공개방은 광고하지 않는다. 코드를 가진 사람의 질문에만 대답한다.
     let advertiser = if private {
@@ -123,20 +119,26 @@ async fn run_host(nickname: &str, room_name: &str, port: u16, private: bool) -> 
     };
 
     let ip = local_ip().map_or("<이 PC의 IP>".to_string(), |ip| ip.to_string());
-    let (title, invite_code) = match secret {
-        Some(secret) => {
-            let invite = Invite { port, secret };
-            (
-                format!("{room_name} · 비공개 · IP {ip}"),
-                Some(invite.to_string()),
-            )
-        }
-        None => (format!("{room_name} · 내 방 · 접속 주소 {ip}:{port}"), None),
+    // 제목은 좁은 창에서 잘릴 수 있으므로, 꼭 필요한 주소는 맨 아래 줄에 표시한다.
+    let (title, address) = if private {
+        (format!("{room_name} · 비공개"), format!(" 방장 IP {ip}"))
+    } else {
+        (
+            format!("{room_name} · 내 방"),
+            format!(" 접속 주소 {ip}:{port}"),
+        )
     };
 
-    // 방장도 일반 멤버처럼 자기 방에 접속한다. (비공개방이면 토큰도 똑같이 제시한다)
-    let session = client::connect(&format!("127.0.0.1:{port}"), nickname, token.as_deref()).await?;
-    let result = run_chat(session, title, invite_code).await;
+    // 방장도 일반 멤버처럼 자기 방에 접속한다. (비공개방이면 코드로 똑같이 인증한다)
+    let session =
+        client::connect(&format!("127.0.0.1:{port}"), nickname, room.invite.as_ref()).await?;
+    let host_view = HostView {
+        address,
+        code: room.code,
+        control: room.control,
+    };
+    let result = run_chat(session, title, Some(host_view)).await;
+
     if let Some(advertiser) = advertiser {
         advertiser.stop();
     }
@@ -163,9 +165,9 @@ async fn run_browse(nickname: &str) -> Result<()> {
 }
 
 /// 채팅 화면을 띄우고, 끝나면 터미널을 원래대로 돌려놓는다.
-async fn run_chat(session: Session, title: String, invite: Option<String>) -> Result<()> {
+async fn run_chat(session: Session, title: String, host_view: Option<HostView>) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = app::run(&mut terminal, session, title, invite).await;
+    let result = app::run(&mut terminal, session, title, host_view).await;
     ratatui::restore();
     result
 }
